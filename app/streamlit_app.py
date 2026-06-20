@@ -1,234 +1,216 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
 import joblib
-import time
+import re
+from functools import lru_cache
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
 
-# =========================
-# LOAD MODEL
-# =========================
-model = joblib.load("models/sentiment_model.pkl")
-tfidf = joblib.load("models/tfidf_vectorizer.pkl")
-
-# =========================
-# PAGE CONFIG
-# =========================
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="AI Hate Speech Detector",
-    page_icon="🧠",
-    layout="centered"
+    page_title="Sentiment Intelligence Platform",
+    page_icon="📊",
+    layout="wide"
 )
 
-# =========================
-# CUSTOM UI
-# =========================
-st.markdown("""
-<style>
+# ---------------- LOAD MODEL (SAFE) ----------------
+@st.cache_resource
+def load_model():
+    try:
+        model = joblib.load("models/sentiment_model.pkl")
+        vectorizer = joblib.load("models/tfidf_vectorizer.pkl")
+        return model, vectorizer
+    except Exception as e:
+        st.error(f"Model loading failed: {e}")
+        return None, None
 
-/* Background */
-.stApp {
-    background: radial-gradient(circle at top, #0f172a, #020617);
-    color: white;
-    font-family: 'Segoe UI';
-}
+model, tfidf = load_model()
 
-/* Container */
-.block-container {
-    padding-top: 2rem;
-    max-width: 800px;
-}
+# ---------------- NLP INIT (CACHE) ----------------
+@st.cache_resource
+def load_nlp():
+    import nltk
+    nltk.download("stopwords", quiet=True)
+    stop_words = set(stopwords.words("english"))
+    stemmer = PorterStemmer()
+    return stop_words, stemmer
 
-/* Title */
-h1 {
-    text-align: center;
-    font-size: 42px !important;
-    background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 800;
-}
+stop_words, stemmer = load_nlp()
 
-/* Subtitle */
-.subtitle {
-    text-align: center;
-    color: #94a3b8;
-    margin-bottom: 20px;
-}
+# ---------------- PREPROCESSING (OPTIMIZED) ----------------
+@lru_cache(maxsize=5000)
+def preprocess(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r'@\w+|#', '', text)
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z ]', ' ', text)
+    words = text.split()
 
-/* Text area */
-textarea {
-    background: rgba(255,255,255,0.04) !important;
-    color: white !important;
-    border-radius: 14px !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    font-size: 16px !important;
-    padding: 12px;
-}
+    words = [w for w in words if w not in stop_words]
+    words = [stemmer.stem(w) for w in words]
 
-/* Button */
-.stButton > button {
-    width: 100%;
-    padding: 14px;
-    border-radius: 14px;
-    background: linear-gradient(90deg, #2563eb, #7c3aed);
-    color: white;
-    font-size: 16px;
-    border: none;
-    transition: 0.3s;
-    font-weight: 600;
-}
+    return " ".join(words).strip()
 
-.stButton > button:hover {
-    transform: scale(1.03);
-    box-shadow: 0 0 25px rgba(99,102,241,0.4);
-}
+# ---------------- SESSION STATE ----------------
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-/* Cards */
-.card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    padding: 20px;
-    border-radius: 16px;
-    margin-top: 20px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-}
+# ---------------- SIDEBAR ----------------
+st.sidebar.title("📌 Dashboard")
 
-/* Metric boxes */
-.metric {
-    background: rgba(255,255,255,0.05);
-    padding: 18px;
-    border-radius: 14px;
-    text-align: center;
-}
-
-/* Footer */
-.footer {
-    text-align: center;
-    color: #64748b;
-    font-size: 13px;
-    margin-top: 30px;
-}
-
-.badge {
-    display: inline-block;
-    padding: 5px 10px;
-    background: rgba(99,102,241,0.2);
-    border-radius: 10px;
-    font-size: 12px;
-    margin: 3px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =========================
-# HEADER
-# =========================
-st.markdown("<h1>🧠 AI Hate Speech Detector</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Detect toxic & hate speech using Machine Learning (NLP + TF-IDF)</p>", unsafe_allow_html=True)
-
-st.markdown("""
-<div style='text-align:center;'>
-<span class='badge'>NLP</span>
-<span class='badge'>Machine Learning</span>
-<span class='badge'>Streamlit</span>
-<span class='badge'>TF-IDF</span>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("---")
-
-# =========================
-# EXAMPLE INPUTS (UX BOOST)
-# =========================
-st.markdown("### ✨ Try Examples:")
-col1, col2, col3 = st.columns(3)
-
-examples = [
-    "I love this product",
-    "I don't like you, go away",
-    "You are amazing!"
-]
-
-if col1.button("Example 1"):
-    st.session_state.example = examples[0]
-
-if col2.button("Example 2"):
-    st.session_state.example = examples[1]
-
-if col3.button("Example 3"):
-    st.session_state.example = examples[2]
-
-# =========================
-# INPUT
-# =========================
-tweet = st.text_area(
-    "Enter your text below 👇",
-    height=130,
-    value=st.session_state.get("example", "")
+page = st.sidebar.radio(
+    "Navigation",
+    ["🏠 Analyzer", "📈 Analytics", "ℹ️ About"]
 )
 
-# =========================
-# PREDICTION
-# =========================
-if st.button("🚀 Analyze Now"):
+st.sidebar.divider()
 
-    if tweet.strip() == "":
-        st.warning("Please enter text.")
-    else:
+st.sidebar.markdown("### Model Info")
+st.sidebar.success("Model Loaded" if model else "Model Not Loaded")
 
-        with st.spinner("Analyzing text using AI model..."):
-            time.sleep(1.2)
+st.sidebar.write("Algorithm: LinearSVC")
+st.sidebar.write("Features: TF-IDF")
+st.sidebar.write("Classes: 4")
 
-            tweet_tfidf = tfidf.transform([tweet])
-            prediction = model.predict(tweet_tfidf)[0]
-            probability = model.predict_proba(tweet_tfidf)[0]
-            confidence = probability[prediction] * 100
+# ---------------- MAIN PAGE ----------------
+if page == "🏠 Analyzer":
 
-        # =========================
-        # RESULT CARD
-        # =========================
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="
+        padding:25px;
+        border-radius:18px;
+        background:linear-gradient(135deg,#0f172a,#1e293b);
+        color:white;
+        text-align:center;">
+        <h1>📊 Sentiment Intelligence Platform</h1>
+        <p>AI Powered NLP Classification System</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        if prediction == 1:
-            st.markdown("## 🚨 Hate Speech Detected")
-            st.error("This text may contain toxic or harmful language.")
-        else:
-            st.markdown("## ✅ Normal Speech")
-            st.success("This text looks safe and neutral.")
+    st.write("")
 
-        st.write(f"### Confidence: {confidence:.2f}%")
+    examples = {
+        "Positive": "I absolutely love this product!",
+        "Negative": "This is the worst experience ever",
+        "Neutral": "The update was released today",
+        "Irrelevant": "My dog is sleeping on the sofa"
+    }
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    choice = st.selectbox(
+        "Choose Example or Write Custom",
+        ["Custom"] + list(examples.keys())
+    )
 
-        # =========================
-        # METRICS
-        # =========================
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
+    text_input = st.text_area(
+        "Enter Text",
+        value=examples.get(choice, ""),
+        height=140
+    )
+
+    if st.button("🚀 Predict Sentiment", use_container_width=True):
+
+        if not text_input.strip():
+            st.warning("Please enter valid text")
+            st.stop()
+
+        if model is None or tfidf is None:
+            st.error("Model not loaded properly")
+            st.stop()
+
+        with st.spinner("Analyzing sentiment..."):
+
+            processed = preprocess(text_input)
+            vector = tfidf.transform([processed])
+
+            pred = model.predict(vector)[0]
+
+            # safer confidence
+            try:
+                scores = model.decision_function(vector)
+                confidence = float(np.max(scores))
+                confidence = 1 / (1 + np.exp(-confidence))  # sigmoid scaling
+                confidence = round(confidence * 100, 2)
+            except:
+                confidence = 0
+
+        # history
+        st.session_state.history.append({
+            "Text": text_input[:60],
+            "Prediction": pred,
+            "Confidence": confidence
+        })
+
+        # output UI
+        st.subheader("Result")
+
+        color_map = {
+            "Positive": "success",
+            "Negative": "error",
+            "Neutral": "info",
+            "Irrelevant": "warning"
+        }
+
+        getattr(st, color_map.get(pred, "info"))(f"{pred} Sentiment")
+
+        st.metric("Confidence", f"{confidence}%")
+        st.progress(confidence / 100)
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown(f"""
-            <div class='metric'>
-            <h4>Normal</h4>
-            <h2>{probability[0]*100:.2f}%</h2>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### Original")
+            st.write(text_input)
 
         with col2:
-            st.markdown(f"""
-            <div class='metric'>
-            <h4>Hate Speech</h4>
-            <h2>{probability[1]*100:.2f}%</h2>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### Processed")
+            st.write(processed)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    # history export
+    if st.session_state.history:
+        st.download_button(
+            "📥 Download History",
+            pd.DataFrame(st.session_state.history).to_csv(index=False),
+            "history.csv",
+            "text/csv"
+        )
 
-# =========================
-# FOOTER
-# =========================
-st.markdown("""
-<div class='footer'>
-Built with ❤️ using Streamlit • NLP • Machine Learning <br>
-Portfolio Project • AI Hate Speech Detection System
-</div>
-""", unsafe_allow_html=True)
+# ---------------- ANALYTICS ----------------
+elif page == "📈 Analytics":
+
+    st.title("📈 Analytics Dashboard")
+
+    df = pd.DataFrame(st.session_state.history)
+
+    if not df.empty:
+
+        st.bar_chart(df["Prediction"].value_counts())
+
+        st.dataframe(df)
+
+    else:
+        st.info("No data available yet")
+
+# ---------------- ABOUT ----------------
+else:
+    st.title("ℹ️ About")
+
+    st.markdown("""
+    ### Sentiment Analysis System
+
+    - NLP preprocessing
+    - TF-IDF vectorization
+    - LinearSVC classifier
+    - Streamlit deployment
+
+    ### Improvements in this version
+    - Faster preprocessing (cached)
+    - Safer model loading
+    - Better confidence scoring
+    - Export feature
+    - Production-ready structure
+    """)
+
+# ---------------- FOOTER ----------------
+st.markdown("---")
+st.markdown("<center>Built with ❤️ using Streamlit + NLP + ML</center>", unsafe_allow_html=True)
