@@ -1,81 +1,64 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
 import re
-from functools import lru_cache
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# ---------------- PAGE CONFIG ----------------
+
+MODEL_PATH = r"C:\Users\HP\OneDrive\Desktop\Social-Media-Sentiment-Trend-Analysis\models\sentiment_pipeline.pkl"
+
+
 st.set_page_config(
     page_title="Sentiment Intelligence Platform",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
 )
 
-# ---------------- LOAD MODEL (SAFE) ----------------
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"@\w+", " ", text)
+    text = re.sub(r"http\S+|www\S+", " ", text)
+    text = re.sub(r"#", "", text)
+    text = re.sub(r"[^a-zA-Z\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 @st.cache_resource
 def load_model():
     try:
-        model = joblib.load("models/sentiment_model.pkl")
-        vectorizer = joblib.load("models/tfidf_vectorizer.pkl")
-        return model, vectorizer
+        return joblib.load(MODEL_PATH)
     except Exception as e:
         st.error(f"Model loading failed: {e}")
-        return None, None
+        return None
 
-model, tfidf = load_model()
 
-# ---------------- NLP INIT (CACHE) ----------------
-@st.cache_resource
-def load_nlp():
-    import nltk
-    nltk.download("stopwords", quiet=True)
-    stop_words = set(stopwords.words("english"))
-    stemmer = PorterStemmer()
-    return stop_words, stemmer
+pipeline = load_model()
 
-stop_words, stemmer = load_nlp()
-
-# ---------------- PREPROCESSING (OPTIMIZED) ----------------
-@lru_cache(maxsize=5000)
-def preprocess(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r'@\w+|#', '', text)
-    text = re.sub(r'http\S+', '', text)
-    text = re.sub(r'[^a-zA-Z ]', ' ', text)
-    words = text.split()
-
-    words = [w for w in words if w not in stop_words]
-    words = [stemmer.stem(w) for w in words]
-
-    return " ".join(words).strip()
-
-# ---------------- SESSION STATE ----------------
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# ---------------- SIDEBAR ----------------
 st.sidebar.title("📌 Dashboard")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["🏠 Analyzer", "📈 Analytics", "ℹ️ About"]
+    ["🏠 Analyzer", "📈 Analytics", "ℹ️ About"],
 )
 
 st.sidebar.divider()
-
 st.sidebar.markdown("### Model Info")
-st.sidebar.success("Model Loaded" if model else "Model Not Loaded")
-
+st.sidebar.success("Model Loaded" if pipeline else "Model Not Loaded")
 st.sidebar.write("Algorithm: LinearSVC")
 st.sidebar.write("Features: TF-IDF")
-st.sidebar.write("Classes: 4")
+st.sidebar.write("Input: Tweet text only")
+st.sidebar.write("Classes: Positive, Negative, Neutral")
 
-# ---------------- MAIN PAGE ----------------
+if pipeline is not None:
+    st.sidebar.write("Loaded Classes:")
+    st.sidebar.write(list(pipeline.classes_))
+
 if page == "🏠 Analyzer":
-
     st.markdown("""
     <div style="
         padding:25px;
@@ -91,126 +74,115 @@ if page == "🏠 Analyzer":
     st.write("")
 
     examples = {
-        "Positive": "I absolutely love this product!",
-        "Negative": "This is the worst experience ever",
-        "Neutral": "The update was released today",
-        "Irrelevant": "My dog is sleeping on the sofa"
+        "Positive": "I absolutely love this game, it is amazing!",
+        "Negative": "This is the worst update ever, I hate it.",
+        "Neutral": "The update was released today.",
     }
 
     choice = st.selectbox(
         "Choose Example or Write Custom",
-        ["Custom"] + list(examples.keys())
+        ["Custom"] + list(examples.keys()),
     )
 
     text_input = st.text_area(
         "Enter Text",
         value=examples.get(choice, ""),
-        height=140
+        height=140,
     )
 
     if st.button("🚀 Predict Sentiment", use_container_width=True):
-
         if not text_input.strip():
-            st.warning("Please enter valid text")
+            st.warning("Please enter valid text.")
             st.stop()
 
-        if model is None or tfidf is None:
-            st.error("Model not loaded properly")
+        if pipeline is None:
+            st.error("Model not loaded properly.")
             st.stop()
 
         with st.spinner("Analyzing sentiment..."):
+            cleaned_text = clean_text(text_input)
 
-            processed = preprocess(text_input)
-            vector = tfidf.transform([processed])
+            if not cleaned_text:
+                st.warning("Text became empty after cleaning. Please enter more meaningful text.")
+                st.stop()
 
-            pred = model.predict(vector)[0]
+            pred = pipeline.predict([cleaned_text])[0]
 
-            # safer confidence
             try:
-                scores = model.decision_function(vector)
+                scores = pipeline.decision_function([cleaned_text])
                 confidence = float(np.max(scores))
-                confidence = 1 / (1 + np.exp(-confidence))  # sigmoid scaling
+                confidence = 1 / (1 + np.exp(-confidence))
                 confidence = round(confidence * 100, 2)
-            except:
+            except Exception:
                 confidence = 0
 
-        # history
         st.session_state.history.append({
-            "Text": text_input[:60],
+            "Text": text_input[:100],
+            "Cleaned_Text": cleaned_text,
             "Prediction": pred,
-            "Confidence": confidence
+            "Confidence": confidence,
         })
 
-        # output UI
         st.subheader("Result")
 
         color_map = {
             "Positive": "success",
             "Negative": "error",
             "Neutral": "info",
-            "Irrelevant": "warning"
         }
 
         getattr(st, color_map.get(pred, "info"))(f"{pred} Sentiment")
-
         st.metric("Confidence", f"{confidence}%")
         st.progress(confidence / 100)
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### Original")
+            st.markdown("### Original Input")
             st.write(text_input)
 
         with col2:
-            st.markdown("### Processed")
-            st.write(processed)
+            st.markdown("### Cleaned Text")
+            st.write(cleaned_text)
 
-    # history export
     if st.session_state.history:
         st.download_button(
             "📥 Download History",
             pd.DataFrame(st.session_state.history).to_csv(index=False),
             "history.csv",
-            "text/csv"
+            "text/csv",
         )
 
-# ---------------- ANALYTICS ----------------
 elif page == "📈 Analytics":
-
     st.title("📈 Analytics Dashboard")
 
     df = pd.DataFrame(st.session_state.history)
 
     if not df.empty:
-
         st.bar_chart(df["Prediction"].value_counts())
-
         st.dataframe(df)
-
     else:
-        st.info("No data available yet")
+        st.info("No data available yet.")
 
-# ---------------- ABOUT ----------------
 else:
     st.title("ℹ️ About")
 
     st.markdown("""
     ### Sentiment Analysis System
 
-    - NLP preprocessing
+    - 3-class sentiment classification
+    - Tweet text cleaning
     - TF-IDF vectorization
     - LinearSVC classifier
     - Streamlit deployment
 
-    ### Improvements in this version
-    - Faster preprocessing (cached)
-    - Safer model loading
-    - Better confidence scoring
-    - Export feature
-    - Production-ready structure
+    ### Flow
+
+    User Text → Cleaning → Saved Model Pipeline → Sentiment
     """)
 
-# ---------------- FOOTER ----------------
 st.markdown("---")
-st.markdown("<center>Built with ❤️ using Streamlit + NLP + ML</center>", unsafe_allow_html=True)
+st.markdown(
+    "<center>Built with ❤️ using Streamlit + NLP + ML</center>",
+    unsafe_allow_html=True,
+)
